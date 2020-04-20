@@ -23,7 +23,12 @@ from localrnn import LocalRNN
 from globalrnn import GlobalRNN
 from krnn import KRNN
 from preprocess import generate_dataset, load_nyc_sharing_bike_data, load_metr_la_data, get_normalized_adj
-
+from krnn2 import local_linear_model,krnn_local
+from krnn3 import KRNN3
+from krnn4 import KRNN4
+from krnn5 import KRNN5
+from krnn6 import KRNN6
+from krnn7 import krnn_conv_local
 from sg5 import get_decomp_dataset,get_denosing_dataset,get_change_point_dataset,get_change_point_dataset_parall
 
 
@@ -39,7 +44,7 @@ parser.add_argument('--log-dir', type=str, default='./logs',
                     help='Path to log dir')
 parser.add_argument('--gpus', type=int, default=1,
                     help='Number of GPUs to use')
-parser.add_argument('-m', "--model", choices=['tgcn', 'stgcn', 'localrnn', 'globalrnn', 'krnn'],
+parser.add_argument('-m', "--model", choices=['tgcn', 'stgcn', 'localrnn', 'globalrnn', 'krnn','linear','global_local','krnn3','krnn4','krnn5','krnn6','krnn7'],
                     help='Choose Spatial-Temporal model', default='stgcn')
 parser.add_argument('-d', "--dataset", choices=["metr", "nyc-bike"],
                     help='Choose dataset', default='nyc-bike')
@@ -69,7 +74,7 @@ if args.enable_cuda and torch.cuda.is_available():
 else:
     args.device = torch.device('cpu')
 
-model = {'tgcn': TGCN, 'stgcn': STGCN, 'localrnn': LocalRNN,
+model = {'tgcn': TGCN, 'stgcn': STGCN, 'localrnn': LocalRNN,'linear':local_linear_model,'global_local':krnn_local,'krnn3':KRNN3,'krnn4':KRNN4,'krnn5':KRNN5,'krnn6':KRNN6,'krnn7':krnn_conv_local,
          'globalrnn': GlobalRNN, 'krnn': KRNN}.get(args.model)
 
 backend = args.backend
