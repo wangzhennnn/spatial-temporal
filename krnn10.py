@@ -238,7 +238,7 @@ class dila_conv2(nn.Module):
         # batch_size x embedding_size x text_len   
         return out
 
-class krnn_conv_local1(nn.Module):  
+class krnn_conv_local10(nn.Module):  
     def __init__(self,num_nodes, num_features, num_timesteps_input,
                  num_timesteps_output, kernel_size=2,dilation_size=2,layers=3,gcn_type='normal', hidden_size=64):
         """
@@ -250,7 +250,7 @@ class krnn_conv_local1(nn.Module):
         :param num_timesteps_output: Desired number of future time steps
         output by the network.
         """
-        super(krnn_conv_local1, self).__init__()
+        super(krnn_conv_local10, self).__init__()
 
         self.globalrnn=KRNN8(num_nodes, num_features, num_timesteps_input,num_timesteps_output,
      gcn_type='normal',kernel_size_set=[2,2,2,3,3,3,4,4,4], dilation_size_set=[1,2,4,1,2,4,1,2,4] ,hidden_size=64,num_comps=9)
@@ -269,19 +269,19 @@ class krnn_conv_local1(nn.Module):
     #    print(query.size())
         out1=self.globalrnn(A,X)
         out2=self.local_linear(A,X)
-        out0=torch.stack((out1,out2),3)
+    #    out0=torch.stack((out1,out2),3)
     #    print(out1.size(),out2.size(),out0.size(),X.size())
     #    print('out1.size:',out1.size(),out2.size())
-        weight = torch.softmax(self.embed1, dim=-1)
-        weight=torch.einsum('ijk,kl -> ijl', query, self.embed1 )#(32,207,15),(15,3)->(32,207,3)
-        weight=torch.einsum('ijl,ijlh -> ijh', weight, out0 )#(32,207,3),(32,207,3,2)->(32,207,2)
-        weight = torch.softmax(weight, dim=-1)#(32,207,2)
-        scale=self.scale1.sqrt()
-        weight=torch.div( weight, scale)
+    #    weight = torch.softmax(self.embed1, dim=-1)
+    #    weight=torch.einsum('ijk,kl -> ijl', query, self.embed1 )#(32,207,15),(15,3)->(32,207,3)
+    #    weight=torch.einsum('ijl,ijlh -> ijh', weight, out0 )#(32,207,3),(32,207,3,2)->(32,207,2)
+    #    weight = torch.softmax(weight, dim=-1)#(32,207,2)
+    #    scale=self.scale1.sqrt()
+    #    weight=torch.div( weight, scale)
     #    out = torch.einsum('ijkl,jl->ijk', out0, weight)
-        out = torch.einsum('ijkl,ijl->ijk', out0, weight)
-    #    out=out1+out2
-        return out
+    #    out = torch.einsum('ijkl,ijl->ijk', out0, weight)
+        out=out1+out2
+        return out,out1,out2
 
 
 

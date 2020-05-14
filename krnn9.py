@@ -268,19 +268,71 @@ class krnn_conv_local1(nn.Module):
         query=self.dil(query)
     #    print(query.size())
         out1=self.globalrnn(A,X)
-        out2=self.local_linear(A,X)
-        out0=torch.stack((out1,out2),3)
+    #    out2=self.local_linear(A,X)
+    #    out0=torch.stack((out1,out2),3)
     #    print(out1.size(),out2.size(),out0.size(),X.size())
     #    print('out1.size:',out1.size(),out2.size())
-        weight = torch.softmax(self.embed1, dim=-1)
-        weight=torch.einsum('ijk,kl -> ijl', query, self.embed1 )#(32,207,15),(15,3)->(32,207,3)
-        weight=torch.einsum('ijl,ijlh -> ijh', weight, out0 )#(32,207,3),(32,207,3,2)->(32,207,2)
-        weight = torch.softmax(weight, dim=-1)#(32,207,2)
-        scale=self.scale1.sqrt()
-        weight=torch.div( weight, scale)
+    #    weight = torch.softmax(self.embed1, dim=-1)
+    #    weight=torch.einsum('ijk,kl -> ijl', query, self.embed1 )#(32,207,15),(15,3)->(32,207,3)
+    #    weight=torch.einsum('ijl,ijlh -> ijh', weight, out0 )#(32,207,3),(32,207,3,2)->(32,207,2)
+    #    weight = torch.softmax(weight, dim=-1)#(32,207,2)
+    #    scale=self.scale1.sqrt()
+    #    weight=torch.div( weight, scale)
     #    out = torch.einsum('ijkl,jl->ijk', out0, weight)
-        out = torch.einsum('ijkl,ijl->ijk', out0, weight)
-    #    out=out1+out2
+    #    out = torch.einsum('ijkl,ijl->ijk', out0, weight)
+        out=out1
+ 
+        return out
+
+
+
+class krnn_conv_local2(nn.Module):  
+    def __init__(self,num_nodes, num_features, num_timesteps_input,
+                 num_timesteps_output, kernel_size=2,dilation_size=2,layers=3,gcn_type='normal', hidden_size=64):
+        """
+        build one linear_model for each time series
+        :param num_nodes: Number of nodes in the graph.
+        :param num_features: Number of features at each node in each time step.
+        :param num_timesteps_input: Number of past time steps fed into the
+        network.
+        :param num_timesteps_output: Desired number of future time steps
+        output by the network.
+        """
+        super(krnn_conv_local2, self).__init__()
+
+
+
+        self.globalrnn=torch.load('net.pkl')  
+        self.local_linear=local_conv_model(num_nodes, num_features, num_timesteps_input,
+                 num_timesteps_output, kernel_size=2,dilation_size=2,layers=3, hidden_size=64)
+        self.dil=dila_conv2(c_in=num_nodes,c_out=num_nodes,kernel_size=2,dilation=2,group=num_nodes)
+    
+
+    #    self.scale1 = torch.from_numpy(np.array(num_timesteps_input*num_timesteps_output)).float()   
+    #    self.embed1 = nn.Parameter(torch.FloatTensor(num_timesteps_input-2,num_timesteps_output))
+    #    self.embed1.data.normal_()
+
+    def forward(self, A, X):
+        query=X[:,:,:,0]
+        query=self.dil(query)
+    #    print(query.size())
+   
+        for p in self.globalrnn.parameters():
+            p.requires_grad = False
+        out1=self.globalrnn(X)
+        out2=self.local_linear(A,X)
+    #    out0=torch.stack((out1,out2),3)
+    #    print(out1.size(),out2.size(),out0.size(),X.size())
+    #    print('out1.size:',out1.size(),out2.size())
+    #    weight = torch.softmax(self.embed1, dim=-1)
+    #    weight=torch.einsum('ijk,kl -> ijl', query, self.embed1 )#(32,207,15),(15,3)->(32,207,3)
+    #    weight=torch.einsum('ijl,ijlh -> ijh', weight, out0 )#(32,207,3),(32,207,3,2)->(32,207,2)
+    #    weight = torch.softmax(weight, dim=-1)#(32,207,2)
+    #    scale=self.scale1.sqrt()
+    #    weight=torch.div( weight, scale)
+    #    out = torch.einsum('ijkl,jl->ijk', out0, weight)
+    #    out = torch.einsum('ijkl,ijl->ijk', out0, weight)
+        out=out1+out2
         return out
 
 
