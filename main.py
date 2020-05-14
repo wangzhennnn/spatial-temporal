@@ -29,6 +29,9 @@ from krnn4 import KRNN4
 from krnn5 import KRNN5
 from krnn6 import KRNN6
 from krnn7 import krnn_conv_local
+#from krnn8 import krnn_conv_local1
+from krnn9 import krnn_conv_local1,krnn_conv_local2
+from krnn10 import krnn_conv_local10
 from sg5 import get_decomp_dataset,get_denosing_dataset,get_change_point_dataset,get_change_point_dataset_parall
 
 
@@ -44,7 +47,7 @@ parser.add_argument('--log-dir', type=str, default='./logs',
                     help='Path to log dir')
 parser.add_argument('--gpus', type=int, default=1,
                     help='Number of GPUs to use')
-parser.add_argument('-m', "--model", choices=['tgcn', 'stgcn', 'localrnn', 'globalrnn', 'krnn','linear','global_local','krnn3','krnn4','krnn5','krnn6','krnn7'],
+parser.add_argument('-m', "--model", choices=['tgcn', 'stgcn', 'localrnn', 'globalrnn', 'krnn','linear','global_local','krnn3','krnn4','krnn5','krnn6','krnn7','krnn9','krnn10'],
                     help='Choose Spatial-Temporal model', default='stgcn')
 parser.add_argument('-d', "--dataset", choices=["metr", "nyc-bike"],
                     help='Choose dataset', default='nyc-bike')
@@ -54,7 +57,7 @@ parser.add_argument('-batch_size', type=int, default=64,
                     help='Training batch size')
 parser.add_argument('-epochs', type=int, default=1000,
                     help='Training epochs')
-parser.add_argument('-l', '--loss_criterion', choices=['mse', 'mae'],
+parser.add_argument('-l', '--loss_criterion', choices=['mse', 'mae','aux_loss'],
                     help='Choose loss criterion', default='mse')
 parser.add_argument('-num_timesteps_input', type=int, default=15,
                     help='Num of input timesteps')
@@ -64,9 +67,12 @@ parser.add_argument('-early_stop_rounds', type=int, default=30,
                     help='Earlystop rounds when validation loss does not decrease')
 parser.add_argument( '--denosing', choices=['deno', 'deco','change','none'],
                     help='denosing of time series', default='none')
-
-
-
+parser.add_argument( '--pretraining', choices=['pre','none'],
+                    help='pretraining_or_not', default='none')
+parser.add_argument( '--loss_criterion1', choices=['mse', 'mae','cos'],
+                    help='Choose aux loss criterion', default='cos')
+parser.add_argument( '--aux_loss', choices=['yean','none'],
+                    help='aux_loss_or_not', default='none')
 
 args = parser.parse_args()
 if args.enable_cuda and torch.cuda.is_available():
@@ -74,7 +80,7 @@ if args.enable_cuda and torch.cuda.is_available():
 else:
     args.device = torch.device('cpu')
 
-model = {'tgcn': TGCN, 'stgcn': STGCN, 'localrnn': LocalRNN,'linear':local_linear_model,'global_local':krnn_local,'krnn3':KRNN3,'krnn4':KRNN4,'krnn5':KRNN5,'krnn6':KRNN6,'krnn7':krnn_conv_local,
+model = {'tgcn': TGCN, 'stgcn': STGCN, 'localrnn': LocalRNN,'linear':local_linear_model,'global_local':krnn_local,'krnn3':KRNN3,'krnn4':KRNN4,'krnn5':KRNN5,'krnn6':KRNN6,'krnn7':krnn_conv_local,'krnn9':krnn_conv_local1,'krnn10':krnn_conv_local10,
          'globalrnn': GlobalRNN, 'krnn': KRNN}.get(args.model)
 
 backend = args.backend
@@ -82,8 +88,23 @@ log_name = args.log_name
 log_dir = args.log_dir
 gpus = args.gpus
 
+
+class cos_loss(nn.Module):
+    def __init__(self):
+        super().__init__()   #没有需要保存的参数和状态信息
+        
+    def forward(self, x, y):  # 定义前向的函数运算即可
+        return torch.mean( torch.cosine_similarity(x, y))
+
+
 loss_criterion = {'mse': nn.MSELoss(), 'mae': nn.L1Loss()}\
     .get(args.loss_criterion)
+
+loss_criterion1 = {'mse': nn.MSELoss(), 'mae': nn.L1Loss(),'cos':cos_loss()}\
+    .get(args.loss_criterion1)
+
+
+
 gcn_type = args.gcn_type
 batch_size = args.batch_size
 epochs = args.epochs
@@ -184,7 +205,192 @@ class WrapperNet(pl.LightningModule):
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=1e-3)
 
+class WrapperNet2(pl.LightningModule):
+    # NOTE: pl module is supposed to only have ``hparams`` parameter
+    def __init__(self, hparams):
+        super(WrapperNet2, self).__init__()
 
+        self.hparams = hparams
+        self.net = model(
+            hparams.num_nodes,
+            hparams.num_features,
+            hparams.num_timesteps_input,
+            hparams.num_timesteps_output,
+            hparams.gcn_type
+        )
+
+        self.register_buffer('A', torch.Tensor(
+            hparams.num_nodes, hparams.num_nodes).float())
+
+    def init_graph(self, A):
+        self.A.copy_(A)
+
+    def init_data(self, training_input, training_target, val_input, val_target, test_input, test_target):
+        print('preparing data...')
+        self.training_input = training_input
+        self.training_target = training_target
+        self.val_input = val_input
+        self.val_target = val_target
+        self.test_input = test_input
+        self.test_target = test_target
+
+    def make_dataloader(self, X, y, shuffle, backend=backend):
+        dataset = TensorDataset(X, y)
+
+        if backend == 'dp':
+            return DataLoader(dataset, batch_size=batch_size, num_workers=1, shuffle=shuffle, drop_last=True)
+        elif backend == 'ddp':
+            dist_sampler = DistributedSampler(dataset)
+            ###删掉了shuffle，要不然会报个错
+            return DataLoader(dataset, batch_size=batch_size, num_workers=0, sampler=dist_sampler)
+
+    def train_dataloader(self):
+        return self.make_dataloader(self.training_input, self.training_target, shuffle=True)
+
+    def val_dataloader(self):
+        return [
+            self.make_dataloader(
+                self.val_input, self.val_target, shuffle=False),
+            self.make_dataloader(
+                self.test_input, self.test_target, shuffle=False),
+        ]
+
+    def test_dataloader(self):
+        return self.make_dataloader(self.test_input, self.test_target, shuffle=False, backend='dp')
+
+    def forward(self, X):
+        return self.net(self.A, X)
+
+    def training_step(self, batch, batch_idx):
+        X, y = batch
+        y_hat,out1,out2 = self(X)
+        assert(y.size() == y_hat.size())
+        loss = loss_criterion(y_hat, y)-0.01*loss_criterion1(out1,out2)
+
+        return {'loss': loss, 'log': {'train_loss': loss}}
+
+    def validation_step(self, batch, batch_idx, dataloader_idx):
+        X, y = batch
+        y_hat,out1,out2 = self(X)
+        return {'loss': loss_criterion(y_hat, y)}
+
+    def validation_end(self, outputs):
+        tqdm_dict = dict()
+        for idx, output in enumerate(outputs):
+            prefix = 'val' if idx == 0 else 'test'
+            loss_mean = torch.stack([x['loss'] for x in output]).mean()
+            tqdm_dict[prefix + '_loss'] = loss_mean
+        self.logger.experiment.flush()
+        return {'progress_bar': tqdm_dict, 'log': tqdm_dict}
+
+    def test_step(self, batch, batch_idx):
+        X, y = batch
+        y_hat,out1,out2 = self(X)
+        return {'loss': loss_criterion(y_hat, y)}
+
+    def test_end(self, outputs):
+        loss_mean = torch.stack([x['loss'] for x in outputs]).mean()
+        print('Mean test loss : {}'.format(loss_mean.item()))
+        tqdm_dict = {'test_loss': loss_mean}
+        return {'progress_bar': tqdm_dict, 'log': tqdm_dict}
+
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(), lr=1e-3)
+
+
+
+
+class WrapperNet1(pl.LightningModule):
+    # NOTE: pl module is supposed to only have ``hparams`` parameter
+    def __init__(self, hparams):
+        super(WrapperNet1, self).__init__()
+
+        self.hparams = hparams
+        self.net = krnn_conv_local2(
+            hparams.num_nodes,
+            hparams.num_features,
+            hparams.num_timesteps_input,
+            hparams.num_timesteps_output,
+            hparams.gcn_type
+        )
+
+        self.register_buffer('A', torch.Tensor(
+            hparams.num_nodes, hparams.num_nodes).float())
+
+    def init_graph(self, A):
+        self.A.copy_(A)
+
+    def init_data(self, training_input, training_target, val_input, val_target, test_input, test_target):
+        print('preparing data...')
+        self.training_input = training_input
+        self.training_target = training_target
+        self.val_input = val_input
+        self.val_target = val_target
+        self.test_input = test_input
+        self.test_target = test_target
+
+    def make_dataloader(self, X, y, shuffle, backend=backend):
+        dataset = TensorDataset(X, y)
+
+        if backend == 'dp':
+            return DataLoader(dataset, batch_size=batch_size, num_workers=1, shuffle=shuffle, drop_last=True)
+        elif backend == 'ddp':
+            dist_sampler = DistributedSampler(dataset)
+            ###删掉了shuffle，要不然会报个错
+            return DataLoader(dataset, batch_size=batch_size, num_workers=0, sampler=dist_sampler)
+
+    def train_dataloader(self):
+        return self.make_dataloader(self.training_input, self.training_target, shuffle=True)
+
+    def val_dataloader(self):
+        return [
+            self.make_dataloader(
+                self.val_input, self.val_target, shuffle=False),
+            self.make_dataloader(
+                self.test_input, self.test_target, shuffle=False),
+        ]
+
+    def test_dataloader(self):
+        return self.make_dataloader(self.test_input, self.test_target, shuffle=False, backend='dp')
+
+    def forward(self, X):
+        return self.net(self.A, X)
+
+    def training_step(self, batch, batch_idx):
+        X, y = batch
+        y_hat = self(X)
+        assert(y.size() == y_hat.size())
+        loss = loss_criterion(y_hat, y)
+
+        return {'loss': loss, 'log': {'train_loss': loss}}
+
+    def validation_step(self, batch, batch_idx, dataloader_idx):
+        X, y = batch
+        y_hat = self(X)
+        return {'loss': loss_criterion(y_hat, y)}
+
+    def validation_end(self, outputs):
+        tqdm_dict = dict()
+        for idx, output in enumerate(outputs):
+            prefix = 'val' if idx == 0 else 'test'
+            loss_mean = torch.stack([x['loss'] for x in output]).mean()
+            tqdm_dict[prefix + '_loss'] = loss_mean
+        self.logger.experiment.flush()
+        return {'progress_bar': tqdm_dict, 'log': tqdm_dict}
+
+    def test_step(self, batch, batch_idx):
+        X, y = batch
+        y_hat = self(X)
+        return {'loss': loss_criterion(y_hat, y)}
+
+    def test_end(self, outputs):
+        loss_mean = torch.stack([x['loss'] for x in outputs]).mean()
+        print('Mean test loss : {}'.format(loss_mean.item()))
+        tqdm_dict = {'test_loss': loss_mean}
+        return {'progress_bar': tqdm_dict, 'log': tqdm_dict}
+
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(), lr=1e-3)
 if __name__ == '__main__':
     start_time = time.time()
     print('cuda available:', torch.cuda.is_available())
@@ -260,30 +466,112 @@ if __name__ == '__main__':
         'gcn_type': gcn_type,
     })
 
-    net = WrapperNet(hparams)
 
-    net.init_data(
-        training_input, training_target,
-        val_input, val_target,
-        test_input, test_target
-    )
+    if args.aux_loss == "none":
+        net = WrapperNet(hparams)
+        net.init_data(
+            training_input, training_target,
+            val_input, val_target,
+            test_input, test_target
+        )
 
-    net.init_graph(A)
+        net.init_graph(A)
 
-    early_stop_callback = EarlyStopping(patience=early_stop_rounds)
-    logger = TestTubeLogger(save_dir=log_dir, name=log_name)
+        early_stop_callback = EarlyStopping(patience=early_stop_rounds)
+        logger = TestTubeLogger(save_dir=log_dir, name=log_name)
 
-    trainer = pl.Trainer(
-        gpus=gpus,
-        max_epochs=epochs,
-        distributed_backend=backend,
-        early_stop_callback=early_stop_callback,
-        logger=logger,
-        track_grad_norm=2
-    )
-    trainer.fit(net)
+        trainer = pl.Trainer(
+            gpus=gpus,
+            max_epochs=epochs,
+            distributed_backend=backend,
+            early_stop_callback=early_stop_callback,
+            logger=logger,
+            track_grad_norm=2
+        )
+        trainer.fit(net)
+        print('Training time {}'.format(time.time() - start_time))
+    else:
+        net2 = WrapperNet2(hparams)
+        net2.init_data(
+            training_input, training_target,
+            val_input, val_target,
+            test_input, test_target
+        )
 
-    print('Training time {}'.format(time.time() - start_time))
+        net2.init_graph(A)
+
+        early_stop_callback = EarlyStopping(patience=early_stop_rounds)
+        logger = TestTubeLogger(save_dir=log_dir, name=log_name)
+
+        trainer = pl.Trainer(
+            gpus=gpus,
+            max_epochs=epochs,
+            distributed_backend=backend,
+            early_stop_callback=early_stop_callback,
+            logger=logger,
+            track_grad_norm=2
+        )
+        trainer.fit(net2)
+        print('Training time {}'.format(time.time() - start_time))
+    
+    # if args.pretraining == "none":
+    #     net = WrapperNet(hparams)
+    #     net.init_data(
+    #         training_input, training_target,
+    #         val_input, val_target,
+    #         test_input, test_target
+    #     )
+
+    #     net.init_graph(A)
+
+    #     early_stop_callback = EarlyStopping(patience=early_stop_rounds)
+    #     logger = TestTubeLogger(save_dir=log_dir, name=log_name)
+
+    #     trainer = pl.Trainer(
+    #         gpus=gpus,
+    #         max_epochs=epochs,
+    #         distributed_backend=backend,
+    #         early_stop_callback=early_stop_callback,
+    #         logger=logger,
+    #         track_grad_norm=2
+    #     )
+    #     trainer.fit(net)
+    #     print('Training time {}'.format(time.time() - start_time))
+    # else:
+    #     net = WrapperNet(hparams)
+    #     net.init_data(
+    #         training_input, training_target,
+    #         val_input, val_target,
+    #         test_input, test_target
+    #     )
+
+    #     net.init_graph(A)
+
+    #     early_stop_callback = EarlyStopping(patience=early_stop_rounds)
+    #     logger = TestTubeLogger(save_dir=log_dir, name=log_name)
+
+    #     trainer = pl.Trainer(
+    #         gpus=gpus,
+    #         max_epochs=epochs,
+    #         distributed_backend=backend,
+    #         early_stop_callback=early_stop_callback,
+    #         logger=logger,
+    #         track_grad_norm=2
+    #     )
+    #     trainer.fit(net)
+    #     torch.save(net, 'net.pkl')
+    #     print('pretraining is ok')
+    #     net1 = WrapperNet1(hparams)
+
+    #     net1.init_data(
+    #         training_input, training_target,
+    #         val_input, val_target,
+    #         test_input, test_target
+    #     )
+
+    #     net1.init_graph(A)
+    #     trainer.fit(net1)
+       
 
     # # Currently, there are some issues for testing under ddp setting, so switch it to dp setting
     # # change the below line with your own checkpoint path
